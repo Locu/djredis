@@ -7,7 +7,32 @@ from djredis.tests.runner import RedisRingRunner
 
 
 class RingClientTestCase(TestCase):
-  pass
+  def setUp(self):
+    self.runner = RedisRingRunner(num_nodes=3)
+    self.runner.start()
+    self.cache = RedisCache(
+      'localhost:9500; localhost:9501; localhost:9502',
+      {'OPTIONS': {'CLIENT_CLASS': 'djredis.client.RingClient'}})
+
+  def tearDown(self):
+    self.cache.close()
+    self.runner.stop()
+
+  def test_tags(self):
+    self.cache.set('{mytag}-key1', 'helloworld')
+    self.cache.set('{mytag}-key2', 'helloworld')
+    self.cache.set('{mytag}-key3', 'helloworld')
+    self.assertEqual(len(self.cache.client.keys('*{mytag}*')), 3)
+    self.assertEqual(len(self.cache.client.get_node('mytag').keys('*{mytag}*')),
+                     3)
+
+  def test_delete_tag(self):
+    self.cache.set('{mytag}-key1', 'helloworld')
+    self.cache.set('{mytag}-key2', 'helloworld')
+    self.cache.set('{mytag}-key3', 'helloworld')
+    self.assertEqual(len(self.cache.client.keys('*{mytag}*')), 3)
+    self.assertEqual(self.cache.client.delete_tag('mytag'), 3)
+    self.assertEqual(len(self.cache.client.keys('*{mytag}*')), 0)
 
 
 class SentinelBackedRingClientTestCase(TestCase):

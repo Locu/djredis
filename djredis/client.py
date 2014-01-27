@@ -45,7 +45,7 @@ class RingClient(object):
       nodes = list(hosts)
     else:
       assert all(isinstance(host, tuple) and len(host) == 2 for host in hosts)
-      kwargs = self._get_node_kwargs()
+      kwargs = self._get_node_kwargs(options)
       nodes = []
       for host, port in hosts:
         kwargs['host'] = host
@@ -109,6 +109,18 @@ class RingClient(object):
       count += node.delete(*keys)
     return count
 
+  def delete_tag(self, tag):
+    # TODO(usmanm): Use evalsha instead to save sending the script to redis
+    # everytime.
+    node = self.get_node(tag)
+    script = ('local keys = redis.call("keys", ARGV[1])\n'
+              'local n = 0\n'
+              'for k, v in ipairs(keys) do\n'
+              '  n = n + redis.call("del", v)\n'
+              'end\n'
+              'return n')
+    return node.eval(script, 0, '*{%s}*' % tag)
+
   def mget(self, keys, *args):
     keys = _combine_into_list(keys, args)
     node_to_keys = self._get_node_to_key_map(keys)
@@ -149,8 +161,7 @@ class SentinelBackedRingClient(RingClient):
       try:
         masters = client.sentinel_masters().keys()
         break
-      except RedisError, e:
-        print type(e), e.message
+      except RedisError:
         pass
     if masters is None:
       # No Sentinel responded successfully?
