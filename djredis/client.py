@@ -5,6 +5,7 @@ import itertools
 import re
 
 from collections import defaultdict
+from random import shuffle
 from redis import StrictRedis
 from redis.exceptions import RedisError
 from redis.sentinel import Sentinel
@@ -156,6 +157,8 @@ class SentinelBackedRingClient(RingClient):
 
     masters = None
     # Try to fetch a list of all masters from any sentinel.
+    hosts = list(hosts)
+    shuffle(hosts) # Randomly sort sentinels before trying to bootstrap.
     for host, port in hosts:
       client = StrictRedis(host=host, port=port, **sentinel_kwargs)
       try:

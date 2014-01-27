@@ -157,4 +157,6 @@ class RedisCache(BaseCache):
 
   def close(self, **kwargs):
     """Close the cache connection"""
-    self.client.disconnect()
+    # TODO(usmanm): StrictRedis does connection pooling internally so I believe
+    # this should be a no-op.
+    pass
