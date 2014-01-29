@@ -1,6 +1,7 @@
 # coding: utf-8
 
 import functools
+import hashlib
 import itertools
 import re
 
@@ -15,6 +16,16 @@ from django.core.exceptions import ImproperlyConfigured
 from djredis import errors
 from djredis.utils import get_node_name
 from djredis.utils.hashring import HashRing
+
+
+DELETE_TAG_SCRIPT = '''
+local keys = redis.call("keys", ARGV[1])
+local n = 0
+for k, v in ipairs(keys) do
+  n = n + redis.call("del", v)
+end
+return n
+'''.strip()
 
 TAG_RE = re.compile('.*\{(.*)\}.*', re.I)
 
@@ -54,6 +65,15 @@ class RingClient(object):
         nodes.append(StrictRedis(**kwargs))
     self.name_to_node = {get_node_name(node): node for node in nodes}
     self.ring = HashRing(self.name_to_node.keys())
+    self._script_cache = {}
+
+  def _get_script_sha1(self, node, script):
+    sha1, nodes = self._script_cache.setdefault(
+      script, (hashlib.sha1(script).hexdigest(), set()))
+    if node not in nodes:
+      assert node.script_load(script) == sha1
+      nodes.add(node)
+    return sha1
 
   def _get_node_kwargs(self, options):
     try:
@@ -111,16 +131,9 @@ class RingClient(object):
     return count
 
   def delete_tag(self, tag):
-    # TODO(usmanm): Use evalsha instead to save sending the script to redis
-    # everytime.
     node = self.get_node(tag)
-    script = ('local keys = redis.call("keys", ARGV[1])\n'
-              'local n = 0\n'
-              'for k, v in ipairs(keys) do\n'
-              '  n = n + redis.call("del", v)\n'
-              'end\n'
-              'return n')
-    return node.eval(script, 0, '*{%s}*' % tag)
+    sha1 = self._get_script_sha1(node, DELETE_TAG_SCRIPT)
+    return node.evalsha(sha1, 0, '*{%s}*' % tag)
 
   def mget(self, keys, *args):
     keys = _combine_into_list(keys, args)
