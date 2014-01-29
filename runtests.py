@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
+import logging
 import sys
 
 from argparse import ArgumentParser
@@ -27,6 +28,7 @@ def runtests(verbosity, failfast, interactive, test_labels):
     patch_for_test_db_setup()
 
   from djredis.tests import import_tests; import_tests()
+  logging.getLogger('djredis').addHandler(logging.NullHandler())
 
   test_runner = DjangoTestSuiteRunner(
       verbosity=verbosity,

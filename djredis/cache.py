@@ -1,17 +1,35 @@
 # coding: utf-8
 
+import functools
+import logging
 import types
 
 from django.core.cache.backends.base import BaseCache
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.encoding import smart_str
 
+from redis.exceptions import RedisError
+
+from djredis.errors import DJRedisError
 from djredis.utils import pickle
 from djredis.utils.imports import import_by_path
 
 # Stub object to ensure not passing in a `timeout` argument results in
 # the default timeout
 DEFAULT_TIMEOUT = object()
+log = logging.getLogger('djredis')
+
+
+def _nop_if_error(func):
+  @functools.wraps(func)
+  def wrapper(*args, **kwargs):
+    try:
+      return func(*args, **kwargs)
+    except (DJRedisError, RedisError):
+      log.error('Uncaught exception in RedisCache.%s' % func.__name__,
+                exc_info=True)
+      return kwargs.get('default')
+  return wrapper
 
 
 class RedisCache(BaseCache):
@@ -31,6 +49,14 @@ class RedisCache(BaseCache):
     client_cls = import_by_path(options.get('CLIENT_CLASS',
                                             'djredis.client.RingClient'))
     self.client = client_cls(tuple(hosts), options)
+
+    if options.get('FAIL_SILENTLY'):
+      # Wrap methods that call Redis with _nop_if_exception.
+      for attr in ('add', 'get', 'set', 'delete', 'get_many', 'has_key',
+                   'incr', 'decr', 'set_many', 'delete_many', 'clear',
+                   'incr_version', 'decr_version'):
+        method = getattr(self, attr)
+        setattr(self, attr, _nop_if_error(method))
 
   def make_key(self, key, version=None):
     return smart_str(super(RedisCache, self).make_key(key, version=version))

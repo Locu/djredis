@@ -14,6 +14,11 @@ SITE_ROOT = os.path.dirname(os.path.realpath(__file__))
 
 if not (settings.configured or os.environ.get('DJANGO_SETTINGS_MODULE')):
   settings.configure(
+    CACHES={
+      'default': {
+        'BACKEND': 'django.core.cache.backends.dummy.DummyCache'
+        }
+      },
     DATABASES={
       'default': {
         'ENGINE': 'django.db.backends.sqlite3',

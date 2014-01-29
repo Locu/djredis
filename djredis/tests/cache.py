@@ -30,7 +30,7 @@ class RedisCacheTestCase(TestCase):
   can be found at:
   https://github.com/django/django/blob/master/tests/cache/tests.py
   """
-  TEST_SETUPS = {
+  TEST_CLIENTS = {
     'ring': '_setup_ring',
     'sentinel_ring': '_setup_sentinel_ring'
     }
@@ -39,8 +39,8 @@ class RedisCacheTestCase(TestCase):
   def _run_for_clients(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-      for client in RedisCacheTestCase.TEST_SETUPS:
-        getattr(self, RedisCacheTestCase.TEST_SETUPS[client])()
+      for client in RedisCacheTestCase.TEST_CLIENTS:
+        getattr(self, RedisCacheTestCase.TEST_CLIENTS[client])()
         func(self, *args, **kwargs)
         self.runner.stop()
     return wrapper
@@ -408,3 +408,39 @@ class RedisCacheTestCase(TestCase):
     # See https://code.djangoproject.com/ticket/21200
     with self.assertRaises(pickle.PickleError):
       self.cache.set('unpickable', Unpickable())
+
+
+class RedisCacheCustomOptionsTestCase(TestCase):
+  def setUp(self):
+    self.runner = RedisRingRunner()
+    self.runner.start()
+    self.cache = RedisCache(
+      'localhost:9500; localhost:9501; localhost:9502',
+      {'OPTIONS': {'CLIENT_CLASS': 'djredis.client.RingClient',
+                   'FAIL_SILENTLY': True}})
+
+  def tearDown(self):
+    self.runner.stop()
+
+  def test_fail_silently(self):
+    node_name = self.cache.client.ring('key')
+    if '6379' in node_name:
+      node_index = 0
+    elif '6380' in node_name:
+      node_index = 1
+    else:
+      node_index = 2
+    self.cache.set('key', 'value')
+    self.assertEqual(self.cache.get('key'), 'value')
+    self.assertEqual(self.cache.get('key', default='default'), 'value')
+    self.runner.stop_master(node_index)
+    self.assertEqual(self.cache.get('key'), None)
+    self.assertEqual(self.cache.get('key', default='default'), 'default')
+    self.cache.set('key', 'value2')
+    self.assertEqual(self.cache.get('key'), None)
+    self.assertEqual(self.cache.get('key', default='default'), 'default')
+    self.runner.start_master(node_index)
+    time.sleep(1)
+    self.cache.set('key', 'value2')
+    self.assertEqual(self.cache.get('key'), 'value2')
+    self.assertEqual(self.cache.get('key', default='default'), 'value2')    
