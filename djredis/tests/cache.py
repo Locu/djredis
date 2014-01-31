@@ -250,11 +250,11 @@ class RedisCacheTestCase(TestCase):
     self.assertEqual(self.cache.get('key2'), None)
 
   def test_long_timeout(self):
-    '''
+    """
     Using a timeout greater than 30 days makes memcached think
     it is an absolute expiration timestamp instead of a relative
     offset. Test that we honour this convention. Refs #12399.
-    '''
+    """
     self.cache.set('key1', 'eggs', 60 * 60 * 24 * 30 + 1)  # 30 days + 1 second
     self.assertEqual(self.cache.get('key1'), 'eggs')
     
@@ -267,9 +267,9 @@ class RedisCacheTestCase(TestCase):
     self.assertEqual(self.cache.get('key4'), 'lobster bisque')
     
   def test_forever_timeout(self):
-    '''
+    """
     Passing in None into timeout results in a value that is cached forever
-    '''
+    """
     self.cache.set('key1', 'eggs', None)
     self.assertEqual(self.cache.get('key1'), 'eggs')
     
@@ -281,9 +281,9 @@ class RedisCacheTestCase(TestCase):
     self.assertEqual(self.cache.get('key4'), 'lobster bisque')
 
   def test_zero_timeout(self):
-    '''
+    """
     Passing in 0 into timeout results in a value that is never cached
-    '''
+    """
     self.cache.set('key1', 'eggs', 0)
     self.assertEqual(self.cache.get('key1'), None)
     
@@ -409,7 +409,6 @@ class RedisCacheTestCase(TestCase):
     with self.assertRaises(pickle.PickleError):
       self.cache.set('unpickable', Unpickable())
 
-
 class RedisCacheCustomOptionsTestCase(TestCase):
   def setUp(self):
     self.runner = RedisRingRunner()
@@ -443,4 +442,4 @@ class RedisCacheCustomOptionsTestCase(TestCase):
     time.sleep(1)
     self.cache.set('key', 'value2')
     self.assertEqual(self.cache.get('key'), 'value2')
-    self.assertEqual(self.cache.get('key', default='default'), 'value2')    
+    self.assertEqual(self.cache.get('key', default='default'), 'value2')

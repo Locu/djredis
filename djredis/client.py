@@ -3,7 +3,6 @@
 import functools
 import hashlib
 import itertools
-import re
 
 from collections import defaultdict
 from random import shuffle
@@ -14,20 +13,10 @@ from redis.sentinel import Sentinel
 from django.core.exceptions import ImproperlyConfigured
 
 from djredis import errors
+from djredis.conf import settings
 from djredis.utils import get_node_name
 from djredis.utils.hashring import HashRing
 
-
-DELETE_TAG_SCRIPT = '''
-local keys = redis.call("keys", ARGV[1])
-local n = 0
-for k, v in ipairs(keys) do
-  n = n + redis.call("del", v)
-end
-return n
-'''.strip()
-
-TAG_RE = re.compile('.*\{(.*)\}.*', re.I)
 
 def _combine_into_list(keys, args):
   # returns a single list combining keys and args
@@ -50,7 +39,8 @@ class RingClient(object):
   # TOOD(usmanm): Add support for removing dead nodes and re-adding them
   # when they return.
   BROADCAST_METHODS = {'dbsize', 'flushdb', 'info', 'ping'}
-  ROUTE_METHODSS = {'exists', 'get', 'getset', 'incr', 'lock', 'set'}
+  ROUTE_METHODS = {'getset', 'lock'}
+  TAG_ROUTE_METHODS = {'exists', 'get', 'incrby', 'set', 'setnx'}
 
   def __init__(self, hosts, options):
     if all(isinstance(host, StrictRedis) for host in hosts):
@@ -92,10 +82,14 @@ class RingClient(object):
       }
 
   def get_node(self, key):
-    match = TAG_RE.match(key)
-    if match:
-      key = match.groups()[0]
     return self.name_to_node[self.ring(key)]
+
+  def get_cache_key(self, key):
+    if settings.DJREDIS_ENABLE_TAGGING:
+      match = settings.DJREDIS_TAG_REGEX.match(key)
+      if match:
+        return '{%s}' % match.group(1)
+    return key
 
   def _broadcast(self, attr, *args, **kwargs):
     response = {}
@@ -106,54 +100,85 @@ class RingClient(object):
 
   def _route(self, attr, *args, **kwargs):
     assert len(args) > 0 or len(kwargs) > 0
-    key = kwargs['key'] if 'key' in kwargs else args[0]
-    return getattr(self.get_node(key), attr)(*args, **kwargs)
+    return getattr(self.get_node(args[0]), attr)(*args, **kwargs)
+
+  def _tag_route(self, attr, *args, **kwargs):
+    assert len(args) > 0 or len(kwargs) > 0
+    cache_key = self.get_cache_key(args[0])
+    if cache_key != args[0]:
+      attr = 'h%s' % attr # Call analagous hashes command.
+      args = list(args)
+      args.insert(0, cache_key)
+    return getattr(self.get_node(cache_key), attr)(*args, **kwargs)
 
   def __getattr__(self, attr):
     if attr in RingClient.BROADCAST_METHODS:
       return functools.partial(self._broadcast, attr)
-    if attr in RingClient.ROUTE_METHODSS:
+    if attr in RingClient.ROUTE_METHODS:
       return functools.partial(self._route, attr)
+    if attr in RingClient.TAG_ROUTE_METHODS:
+      return functools.partial(self._tag_route, attr)
     raise AttributeError("'%s' object has no attribute '%s'" %
                          (self.__class__.__name__, attr))
 
   def _get_node_to_key_map(self, keys):
-    node_to_keys = defaultdict(list)
+    node_to_keys = defaultdict(lambda: defaultdict(list))
     for key in keys:
-      node_to_keys[self.get_node(key)].append(key)
+      cache_key = self.get_cache_key(key)
+      if cache_key != key:
+        node_to_keys[self.get_node(cache_key)][cache_key].append(key)
+      else:
+        node_to_keys[self.get_node(cache_key)][None].append(key)
     return node_to_keys
 
   def delete(self, *keys):
     node_to_keys = self._get_node_to_key_map(keys)
     count = 0
-    for node, keys in node_to_keys.iteritems():
-      count += node.delete(*keys)
+    for node, key_map in node_to_keys.iteritems():
+      for bucket, keys in key_map.iteritems():
+        if bucket is None:
+          count += node.delete(*keys)
+        else:
+          count += node.hdel(bucket, *keys)
     return count
 
   def delete_tag(self, tag):
+    if not settings.DJREDIS_ENABLE_TAGGING:
+      return
+    if settings.DJREDIS_TAG_REGEX.match(tag):
+      raise errors.InvalidKey('`tag` cannot contain a tag.')
+    tag = '{%s}' % tag
     node = self.get_node(tag)
-    sha1 = self._get_script_sha1(node, DELETE_TAG_SCRIPT)
-    return node.evalsha(sha1, 0, '*{%s}*' % tag)
+    node.delete(tag)
 
   def mget(self, keys, *args):
     keys = _combine_into_list(keys, args)
     node_to_keys = self._get_node_to_key_map(keys)
     key_to_value = {}
-    for node, keys_to_fetch in node_to_keys.iteritems():
-      key_to_value.update(dict(zip(keys_to_fetch, node.mget(keys_to_fetch))))
+    for node, key_map in node_to_keys.iteritems():
+      for bucket, _keys in key_map.iteritems():
+        if bucket is None:
+          key_to_value.update(dict(zip(_keys, node.mget(_keys))))
+        else:
+          key_to_value.update(dict(zip(_keys, node.hmget(bucket, _keys))))
     return [key_to_value[key] for key in keys]
 
-  def mset(self, mapping):
-    node_to_mapping = defaultdict(dict)
-    for key, value in mapping.iteritems():
-      node_to_mapping[self.get_node(key)][key] = value
-    return all(node.mset(mapping)
-               for node, mapping in node_to_mapping.iteritems())
+  def _set(self, key, value, nx=False, ex=False):
+    cache_key = self.get_cache_key(key)
+    node = self.get_node(cache_key)
+    if cache_key == key:
+      return node.set(key, value, nx=nx, ex=ex)
+    if nx:
+      value = node.hsetnx(cache_key, key, value)
+    else:
+      value = node.hset(cache_key, key, value)
+    if ex:
+      node.expire(cache_key, ex)
+    return value
 
   def keys(self, pattern='*'):
     return list(itertools.chain(*(node.keys(pattern) for node in
                                   self.name_to_node.itervalues())))
-          
 
   def disconnect(self):
     for node in self.name_to_node.itervalues():

@@ -3,6 +3,9 @@
 class DJRedisError(Exception):
   pass
 
+class InvalidKey(DJRedisError):
+  pass
+
 class MastersListUnavailable(DJRedisError):
   pass
 

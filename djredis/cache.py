@@ -45,11 +45,10 @@ class RedisCache(BaseCache):
     if not hosts:
       raise ImproperlyConfigured('`LOCATION` must provide at least one host.')
     options = params.get('OPTIONS', {})
-    self.compress = options.get('COMPRESS', False)
     client_cls = import_by_path(options.get('CLIENT_CLASS',
                                             'djredis.client.RingClient'))
     self.client = client_cls(tuple(hosts), options)
-
+    self.compress = options.get('COMPRESS')
     if options.get('FAIL_SILENTLY'):
       # Wrap methods that call Redis with _nop_if_exception.
       for attr in ('add', 'get', 'set', 'delete', 'get_many', 'has_key',
@@ -74,16 +73,11 @@ class RedisCache(BaseCache):
 
   def _set(self, key, value, timeout, version, add_only=False):
     timeout = self.get_backend_timeout(timeout)
-    value = pickle.dumps(value, compress=self.compress)
     if timeout != None and timeout <= 0:
       return False
-    kwargs = {}
-    if add_only:
-      kwargs['nx'] = True
-    if timeout:
-      kwargs['ex'] = timeout
-    return bool(self.client.set(self.make_key(key, version=version), value,
-                                **kwargs))
+    value = pickle.dumps(value, compress=self.compress)
+    return bool(self.client._set(self.make_key(key, version=version), value,
+                                 nx=add_only, ex=timeout))
 
   def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
     """
@@ -147,7 +141,7 @@ class RedisCache(BaseCache):
     exists = self.client.exists(key)
     if not exists:
       raise ValueError
-    return self.client.incr(key, delta)
+    return self.client.incrby(key, delta)
 
   def decr(self, key, delta=1, version=None):
     """

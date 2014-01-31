@@ -3,7 +3,9 @@ import time
 from django.test import TestCase
 
 from djredis.cache import RedisCache
+from djredis.conf import settings
 from djredis.tests.runner import RedisRingRunner
+from djredis.utils import pickle
 
 
 class RingClientTestCase(TestCase):
@@ -18,21 +20,40 @@ class RingClientTestCase(TestCase):
     self.cache.close()
     self.runner.stop()
 
-  def test_tags(self):
-    self.cache.set('{mytag}-key1', 'helloworld')
-    self.cache.set('{mytag}-key2', 'helloworld')
-    self.cache.set('{mytag}-key3', 'helloworld')
-    self.assertEqual(len(self.cache.client.keys('*{mytag}*')), 3)
-    self.assertEqual(len(self.cache.client.get_node('mytag').keys('*{mytag}*')),
-                     3)
 
-  def test_delete_tag(self):
-    self.cache.set('{mytag}-key1', 'helloworld')
-    self.cache.set('{mytag}-key2', 'helloworld')
-    self.cache.set('{mytag}-key3', 'helloworld')
-    self.assertEqual(len(self.cache.client.keys('*{mytag}*')), 3)
-    self.assertEqual(self.cache.client.delete_tag('mytag'), 3)
-    self.assertEqual(len(self.cache.client.keys('*{mytag}*')), 0)
+  def test_tags(self):
+    settings.DJREDIS_ENABLE_TAGGING = True
+    
+    self.assertEqual(self.cache.client.get_cache_key('{mytag}-key1'),
+                     '{mytag}')
+
+    self.cache.set('{mytag}-key1', 'helloworld1')
+    self.cache.set('{mytag}-key2', 'helloworld2')
+    self.cache.set('{mytag}-key3', 'helloworld3')
+    self.assertEqual(self.cache.get('{mytag}-key1'), 'helloworld1')
+    self.assertEqual(self.cache.get('{mytag}-key2'), 'helloworld2')
+    self.assertEqual(self.cache.get('{mytag}-key3'), 'helloworld3')
+
+    node = self.cache.client.get_node('{mytag}')
+    self.assertEqual(self.cache.client.keys(), ['{mytag}'])
+    self.assertEqual(node.hlen('{mytag}'), 3)
+    self.assertEqual(
+      pickle.loads(node.hget('{mytag}', self.cache.make_key('{mytag}-key1'))),
+      'helloworld1')
+    self.assertEqual(
+      pickle.loads(node.hget('{mytag}', self.cache.make_key('{mytag}-key2'))),
+      'helloworld2')
+    self.assertEqual(
+      pickle.loads(node.hget('{mytag}', self.cache.make_key('{mytag}-key3'))),
+      'helloworld3')
+
+    self.assertEqual(self.cache.delete('{mytag}-key1'), 1)
+    self.assertEqual(node.hlen('{mytag}'), 2)
+    self.assertEqual(set(node.hkeys('{mytag}')),
+                     set((self.cache.make_key('{mytag}-key2'),
+                          self.cache.make_key('{mytag}-key3'))))
+    self.cache.client.delete_tag('mytag') # Should just delete hash key.
+    self.assertEqual(self.cache.client.keys(), [])
 
 
 class SentinelBackedRingClientTestCase(TestCase):
