@@ -67,7 +67,7 @@ class RingClient(object):
 
   def _get_node_kwargs(self, options):
     try:
-      db = int(options.get('DATABASE', 0))
+      db = int(options.get('DB', 0))
     except ValueError:
       raise ImproperlyConfigured('`DATABASE` must be a valid integer.')
     password = options.get('PASSWORD')
