@@ -55,6 +55,15 @@ class RingClientTestCase(TestCase):
     self.cache.client.delete_tag('mytag') # Should just delete hash key.
     self.assertEqual(self.cache.client.keys(), [])
 
+    self.cache.set('{mytag1}-key', 'helloworld1')
+    self.cache.set('{mytag2}-key', 'helloworld2')
+    self.assertEqual(self.cache.get('{mytag1}-key'), 'helloworld1')
+    self.assertEqual(self.cache.get('{mytag2}-key'), 'helloworld2')
+    self.assertEqual(set(self.cache.client.keys()),
+                     set(['{mytag1}', '{mytag2}']))
+    self.assertEqual(self.cache.client.delete_tag('mytag1', 'mytag2'), 2)
+    self.assertEqual(self.cache.client.keys(), [])
+
 
 class SentinelBackedRingClientTestCase(TestCase):
   def setUp(self):

@@ -142,14 +142,21 @@ class RingClient(object):
           count += node.hdel(bucket, *keys)
     return count
 
-  def delete_tag(self, tag):
+  def delete_tag(self, *tags):
     if not settings.DJREDIS_ENABLE_TAGGING:
       return
-    if settings.DJREDIS_TAG_REGEX.match(tag):
-      raise errors.InvalidKey('`tag` cannot contain a tag.')
-    tag = '{%s}' % tag
-    node = self.get_node(tag)
-    node.delete(tag)
+    keys_to_delete = []
+    for tag in tags:
+      if settings.DJREDIS_TAG_REGEX.match(tag):
+        raise errors.InvalidKey('%s: a tag cannot contain a tag.' % tag)
+      keys_to_delete.append('{%s}' % tag)
+    node_to_keys = defaultdict(list)
+    for key in keys_to_delete:
+      node_to_keys[self.get_node(key)].append(key)
+    num_deleted = 0
+    for node, keys in node_to_keys.iteritems():
+      num_deleted += node.delete(*keys)
+    return num_deleted
 
   def mget(self, keys, *args):
     keys = _combine_into_list(keys, args)
