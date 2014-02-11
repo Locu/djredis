@@ -3,14 +3,11 @@
 import itertools
 import math
 import os
+import redis
 import subprocess
 import sys
 import tempfile
 import time
-
-from multiprocessing import Pipe
-from multiprocessing import Process
-from redis import StrictRedis
 
 
 class RunnerError(Exception):
@@ -34,68 +31,81 @@ class Runner(object):
 
 
 class ProcessRunner(Runner):
-  def __init__(self, args, wait=1, verbose=False):
+  def __init__(self, args, verbose=False):
     """
     Runs a shell command in a separate process.
     `args` - list of args that represent the shell command.
     """
     self.args = args
     self.verbose = verbose
-    self.wait = wait
-    # `self._proc` is the multiprocessing.Process that executes the shell
-    # command.
-    # `self._sub_proc` is the subprocess.Popen `self._proc` runs for executing
-    # the shell command.
-    # `self._proc_pipe` is a duplex pipe connecting the parent process and
-    # `self._proc`.
-    self._proc = self._sub_proc = self._proc_pipe = None
+    self._sub_proc = None
 
-  def _subprocess_target(self, pipe):
+  def wait(self):
+    pass
+
+  def start(self):
+    if self._sub_proc:
+      raise RunnerError('Process already running.')
     if self.verbose:
       stdout = sys.stdout
       stderr = sys.stderr
     else:
       stdout = stderr = open(os.devnull, 'w')
-    sub_proc = subprocess.Popen(self.args,
-                                stdout=stdout,
-                                stderr=stderr)
-    # TODO(usmanm): Add some `onready` callback.
-    time.sleep(self.wait)
-    pipe.send(sub_proc)
-
-  def start(self):
-    if self._proc:
-      raise RunnerError('Process already running.')
-    self._proc_pipe, child_conn = Pipe()
-    self._proc = Process(target=self._subprocess_target, args=(child_conn,))
-    self._proc.start()
-    self._sub_proc = self._proc_pipe.recv()
+    self._sub_proc = subprocess.Popen(self.args,
+                                      stdout=stdout,
+                                      stderr=stderr)
+    self.wait()
   
   def stop(self):
-    if not self._proc:
+    if not self._sub_proc:
       raise RunnerError('Process not running.')
-    self._sub_proc.kill()
-    self._proc.terminate()
-    self._proc = self._sub_proc = None
+    self._sub_proc.terminate()
+    self._sub_proc.wait()
+    self._sub_proc = None
+
 
 class RedisRunner(ProcessRunner):
   def __init__(self, port, redis_server_path='redis-server', **kwargs):
+    self.port = port
     super(RedisRunner, self).__init__([redis_server_path,
-                                       '--port', str(port)],
+                                       '--port', str(self.port)],
                                       **kwargs)
+
+  @staticmethod
+  def probe(port):
+    for i in xrange(50):
+      try:
+        connection = redis.Connection('localhost', port)
+        connection.connect()
+        connection.disconnect()
+        return True
+      except redis.ConnectionError:
+        time.sleep(0.05) # Wait 50ms between each *probe*.
+    return False
+
+  def wait(self):
+    if not RedisRunner.probe(self.port):
+      raise RunnerError('RedisRunner failed to start.')
 
 
 class RedisSentinelRunner(ProcessRunner):
-  def __init__(self, port, masters, redis_server_path='redis-server', **kwargs):
+  def __init__(self, port, sentinel_conf, redis_server_path='redis-server',
+               **kwargs):
     # Create temporary sentinel config file.
     self._tmp_file = tempfile.NamedTemporaryFile(delete=False)
-    self._tmp_file.write('\n'.join(master for master in masters))
+    self._tmp_file.write('\n'.join(line for line in sentinel_conf))
     self._tmp_file.close()
+    self.port = port
     super(RedisSentinelRunner, self).__init__([redis_server_path,
                                                self._tmp_file.name,
                                                '--sentinel',
-                                               '--port', str(port)],
+                                               '--port', str(self.port)],
                                               **kwargs)
+
+  def wait(self):
+    # Wait for Sentinel to start.
+    if not RedisRunner.probe(self.port):
+      raise RunnerError('RedisSentinelRunner failed to start.')
 
   def __del__(self):
     # Clean up temp file when the runner is being GC'd.
@@ -121,64 +131,46 @@ class RedisRingRunner(Runner):
     # Set up master nodes.
     for i in xrange(num_nodes):
       self._masters.append(RedisRunner(RedisRingRunner.MASTER_PORT + i,
-                                       redis_server_path=redis_server_path,
-                                       wait=0))
+                                       redis_server_path=redis_server_path))
 
     if num_sentinels:
-      masters = []
+      sentinel_conf = []
       quorum = math.ceil(num_sentinels / 2.0)
       for i in xrange(num_nodes):
-        masters.append('sentinel monitor mymaster%s 127.0.0.1 %s %s' %
-                       (i, RedisRingRunner.MASTER_PORT + i, quorum))
-        masters.append('sentinel parallel-syncs mymaster%s 1' % i)
-        masters.append('sentinel down-after-milliseconds mymaster%s 2000' % i)
+        sentinel_conf.append('sentinel monitor mymaster%s 127.0.0.1 %s %s' %
+                             (i, RedisRingRunner.MASTER_PORT + i, quorum))
+        sentinel_conf.append('sentinel parallel-syncs mymaster%s 1' % i)
+        sentinel_conf.append('sentinel down-after-milliseconds mymaster%s 2000'
+                             % i)
         self._slaves.append(RedisRunner(RedisRingRunner.SLAVE_PORT + i,
-                                        redis_server_path=redis_server_path,
-                                        wait=0))
+                                        redis_server_path=redis_server_path))
       for i in xrange(num_sentinels):
         self._sentinels.append(
           RedisSentinelRunner(RedisRingRunner.SENTINEL_PORT + i,
-                              masters,
-                              redis_server_path=redis_server_path,
-                              wait=0)
+                              sentinel_conf,
+                              redis_server_path=redis_server_path)
           )
 
   def start(self):
-    # TODO(usmanm): Make this random time.sleep less ghetto.
     for master in self._masters:
-      try:
-        master.start()
-      except RunnerError:
-        pass
+      master.start()
     if self._sentinels:
       for slave in self._slaves:
-        try:
-          slave.start()
-        except RunnerError:
-          pass
-      time.sleep(1)
+        slave.start()
       for i in xrange(len(self._slaves)):
         # Make slaves follow thier masters.
-        client = StrictRedis(port=RedisRingRunner.SLAVE_PORT + i)
+        client = redis.StrictRedis(port=RedisRingRunner.SLAVE_PORT + i)
         client.slaveof(host='localhost', port=RedisRingRunner.MASTER_PORT + i)
       for sentinel in self._sentinels:
-        try:
-          sentinel.start()
-        except RunnerError:
-          pass
-      # Give time for sentinels to reach a quorum for all masters.
+        sentinel.start()
+      # Wait for Sentinels to reach quorum for each master.
       time.sleep(0.75 * len(self._masters))
-    # Just wait a little to make sure everything's up.
-    time.sleep(1)
 
   def stop(self):
     for runner in itertools.chain(self._sentinels,
                                   self._masters,
                                   self._slaves):
-      try:
-        runner.stop()
-      except RunnerError:
-        pass
+      runner.stop()
 
   def start_master(self, i):
     assert 0 <= i < len(self._masters)

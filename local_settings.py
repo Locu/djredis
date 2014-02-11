@@ -32,7 +32,7 @@ if not (settings.configured or os.environ.get('DJANGO_SETTINGS_MODULE')):
     TEMPLATE_DIRS=(
       os.path.join(SITE_ROOT, 'djredis/templates'),
       ),
-    ROOT_URLCONF='djredis.tests.test_urls',
+    ROOT_URLCONF='djredis.tests.urls',
     FIXTURE_DIRS=(
       os.path.join(SITE_ROOT, 'djredis/fixtures'),
       ),

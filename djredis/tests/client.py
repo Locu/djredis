@@ -1,3 +1,5 @@
+# coding: utf-8
+
 import time
 
 from django.test import TestCase
@@ -97,6 +99,7 @@ class SentinelBackedRingClientTestCase(TestCase):
     ping = self.cache.client.ping()
     self.assertEqual(len(ping), 3)
     self.assertTrue(all(value for value in ping.itervalues()))
+    self.runner.start_sentinel(0)
 
   def test_master_failure(self):
     self.cache.client.set('lol', 'cat')
